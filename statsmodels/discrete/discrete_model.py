@@ -519,6 +519,26 @@ class DiscreteModel(base.LikelihoodModel):
 
 class BinaryModel(DiscreteModel):
     _continuous_ok = False
+    # A two-level categorical response evaluated through the formula API
+    # comes back as two full-rank dummy columns (see GH#9475), not the
+    # single 0/1 column ``_handle_data`` below expects. Allow that one
+    # case through and collapse it; anything wider still isn't valid for
+    # a binary model and is rejected by the base class's check.
+    _formula_max_endog = 2
+
+    def _handle_data(self, endog, exog, missing, hasconst, **kwargs):
+        endog_arr = np.asarray(endog)
+        if endog_arr.ndim == 2 and endog_arr.shape[1] == 2:
+            # Collapse the two dummy columns to a single 0/1 indicator.
+            # Column order from the formula matches sorted category order,
+            # so column 1 (the second/"positive" level) becomes endog == 1,
+            # consistent with how MultinomialModel derives category codes
+            # from the analogous wide dummy matrix via ``argmax(1)``.
+            if hasattr(endog, "columns"):
+                endog = endog.iloc[:, 1]
+            else:
+                endog = endog_arr[:, 1]
+        return super()._handle_data(endog, exog, missing, hasconst, **kwargs)
 
     def __init__(self, endog, exog, offset=None, check_rank=True, **kwargs):
         # unconditional check, requires no extra kwargs added by subclasses
@@ -734,6 +754,14 @@ class BinaryModel(DiscreteModel):
 
 
 class MultinomialModel(BinaryModel):
+    # Any number of outcome categories is valid here, unlike the strictly
+    # binary BinaryModel.formula_max_endog == 2 it inherits from. A
+    # categorical response with J levels evaluates to J dummy columns
+    # through the formula API; _handle_data below already treats an
+    # already-wide endog as pre-computed dummies (see _numpy_to_dummies /
+    # _pandas_to_dummies), so no upper bound is needed. Set to None to
+    # skip the base class's column-count check entirely (see GH#9475).
+    _formula_max_endog = None
 
     def _handle_data(self, endog, exog, missing, hasconst, **kwargs):
         if data_tools._is_using_ndarray_type(endog, None):

@@ -2819,6 +2819,66 @@ def test_mnlogit_factor_categorical():
     assert_allclose(res.params, res_cat.params)
 
 
+def test_mnlogit_formula_string_endog():
+    # GH#9475: a string/categorical dependent variable evaluated through
+    # the formula string interface used to raise ValueError, because the
+    # formula machinery dummy-encodes it into a wide 0/1 matrix before the
+    # model ever sees it, tripping the generic "endog has evaluated to an
+    # array with multiple columns" check. MNLogit already treats a wide
+    # 0/1 endog as pre-computed dummies internally (see _handle_data), so
+    # the fix is to stop rejecting it at the formula layer.
+    dta = sm.datasets.anes96.load_pandas()
+    dta["endog"] = dta.endog.replace(dict(zip(range(7), "ABCDEFG", strict=True)))
+    exog = sm.add_constant(dta.exog, prepend=True)
+    res_direct = sm.MNLogit(dta.endog, exog).fit(disp=0)
+
+    df = dta.data.copy()
+    df["endog_str"] = dta["endog"].astype(str)
+    formula = "endog_str ~ " + " + ".join(dta.exog.columns)
+    res_formula = smf.mnlogit(formula, df).fit(disp=0)
+    assert_allclose(res_formula.params, res_direct.params, rtol=1e-10)
+
+
+@pytest.mark.parametrize(
+    "smf_func,model_cls", [(smf.logit, Logit), (smf.probit, Probit)]
+)
+def test_binary_formula_categorical_endog(smf_func, model_cls):
+    # GH#9475: same underlying issue as test_mnlogit_formula_string_endog,
+    # but for the strictly-binary models. A two-level categorical response
+    # evaluates to two full-rank dummy columns through the formula, which
+    # BinaryModel now collapses to a single 0/1 indicator (second/"positive"
+    # level, matching sorted category order) before the usual data handling.
+    rs = np.random.RandomState(987654321)
+    n = 200
+    df = pd.DataFrame(
+        {
+            "y": pd.Categorical(rs.choice(["no", "yes"], size=n)),
+            "x1": rs.standard_normal(n),
+        }
+    )
+    y01 = (df["y"] == "yes").astype(float)
+    exog = sm.add_constant(df[["x1"]])
+
+    res_direct = model_cls(y01, exog).fit(disp=0)
+    res_formula = smf_func("y ~ x1", data=df).fit(disp=0)
+    assert_allclose(res_formula.params, res_direct.params, rtol=1e-10)
+
+
+def test_binary_formula_categorical_endog_too_wide_raises():
+    # a >2-level categorical response is still correctly rejected for a
+    # strictly-binary model; only the exactly-2-column case is collapsed.
+    rs = np.random.RandomState(987654321)
+    n = 60
+    df = pd.DataFrame(
+        {
+            "y": rs.choice(["a", "b", "c"], size=n),
+            "x1": rs.standard_normal(n),
+        }
+    )
+    with pytest.raises(ValueError, match="multiple"):
+        smf.logit("y ~ x1", data=df).fit(disp=0)
+
+
 def test_formula_missing_exposure():
     # see 2083
     rs = np.random.RandomState(473989724)
